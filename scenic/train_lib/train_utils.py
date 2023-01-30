@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, Tuple, Sequence, Optional, Mapping, Unio
 
 from absl import logging
 from clu import metric_writers
+from clu import periodic_actions
 import flax
 from flax import jax_utils
 from flax import struct
@@ -1092,3 +1093,38 @@ def barrier_across_hosts():
     x = jnp.ones([jax.local_device_count()])
     x = jax.device_get(jax.pmap(lambda x: jax.lax.psum(x, 'i'), 'i')(x))
     assert x[0] == jax.device_count()
+
+
+def handle_checkpointing(
+    train_state: TrainState,
+    chrono: Chrono,
+    report_progress: periodic_actions.ReportProgress,
+    workdir: str,
+    max_checkpoints_to_keep=3,
+):
+  """Handles all the bookkeeping around checkpointing.
+
+  Syncs the training state and unreplicates it, stops & restarts Chrono
+  (and handles its metadata) and writes the actual checkpoint.
+
+  Args:
+    train_state: A replicated TrainState.
+    chrono: The Chrono object.
+    report_progress: the periodic_ations.ReportProgress action.
+    workdir: the workdir of the process.
+    max_checkpoints_to_keep: how many checkpoints to keep.
+  """
+  chrono.pause(wait_for=(train_state.params, train_state.opt_state))
+  with report_progress.timed('checkpoint'):
+    train_state = sync_model_state_across_replicas(train_state)
+    if jax.process_index() == 0:
+      unrep_train_state = jax_utils.unreplicate(train_state)
+      metadata = unrep_train_state.metadata
+      metadata['chrono'] = chrono.save()
+      unrep_train_state.replace(metadata=metadata)
+      save_checkpoint(
+          workdir,
+          unrep_train_state,
+          max_to_keep=max_checkpoints_to_keep)
+      del unrep_train_state
+  chrono.resume()

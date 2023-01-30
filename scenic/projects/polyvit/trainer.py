@@ -749,19 +749,8 @@ def train(
     ##################### CHECKPOINTING ############################
     if ((step % checkpoint_steps == 1 and step > 1) or
         (step == total_steps)) and config.checkpoint:
-      chrono.pause(wait_for=(train_state.params, train_state.opt_state))
-      with report_progress.timed('checkpoint'):
-        # Sync model state across replicas.
-        train_state = train_utils.sync_model_state_across_replicas(train_state)
-        if lead_host:
-          # Take the first replica.
-          unrep_train_state = jax_utils.unreplicate(train_state)
-          metadata = unrep_train_state.metadata
-          metadata['chrono'] = chrono.save()
-          unrep_train_state.replace(metadata=metadata)  # pytype: disable=attribute-error
-          train_utils.save_checkpoint(workdir, unrep_train_state)
-          del unrep_train_state
-      chrono.resume()  # Un-pause now.
+      train_utils.handle_checkpointing(
+          train_state, chrono, report_progress, workdir)
 
     ##################### FEWSHOT EVALUATION ############################
     if 'fewshot' in config:
